@@ -1,0 +1,36 @@
+{
+    "name": "deadair-plugin-vellichor-books",
+    "version": "0.1.0",
+    "private": true,
+    "description": "Read EPUB books aloud as narration: series and chapters as text for the station to speak.",
+    "license": "MIT",
+    "type": "module",
+    "main": "./dist/index.js",
+    "files": [
+        "dist/**"
+    ],
+    "deadair": {
+        "plugin": "./dist/index.js"
+    },
+    "scripts": {
+        "build": "tsup",
+        "typecheck": "tsc --noEmit",
+        "test": "vitest run",
+        "check": "biome check --write src tests"
+    },
+    "peerDependencies": {
+        "@deadair/plugin-sdk": ">=0.1.0",
+        "zod": "^4.0.0"
+    },
+    "devDependencies": {
+        "@biomejs/biome": "^2.5.14",
+        "@deadair/plugin-sdk": ">=0.1.0",
+        "@types/node": "^26.1.2",
+        "fast-xml-parser": "^4.5.0",
+        "jszip": "^3.10.1",
+        "tsup": "^8.5.1",
+        "typescript": "^6.0.3",
+        "vitest": "^4.1.10",
+        "zod": "^4.5.4"
+    }
+}
