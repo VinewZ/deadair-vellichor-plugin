@@ -4,12 +4,6 @@ import { z } from 'zod';
 export const REQUEST_TIMEOUT_MS = 15_000;
 export const BOOKS_KEY = 'books';
 
-/** One row of the operator's book list. `url` is the column the host allowlists. */
-export const bookRowSchema = z.object({
-    name: z.string().trim().max(300).optional(),
-    url: z.string().trim().min(1),
-});
-
 export const booksConfig = z.object({
     books: z.string().default('[]'),
 });
@@ -30,18 +24,27 @@ const isFetchable = (url: string): boolean => {
     }
 };
 
-/** Lenient reader: drops rows without a fetchable address. Refused at save by the schema below. */
-export function parseBookRows(raw: unknown): ConfiguredBook[] {
+/** Lenient reader: drops rows without a fetchable address (refused at save by the schema below). */
+export function parseBookRows(raw: unknown, onDrop?: (row: unknown) => void): ConfiguredBook[] {
     if (typeof raw !== 'string' || raw.trim().length === 0) return [];
     try {
         const parsed: unknown = JSON.parse(raw);
         if (!Array.isArray(parsed)) return [];
         const out: ConfiguredBook[] = [];
+        // One address, one book: repeats would list — and read — the book twice.
+        const seen = new Set<string>();
         for (const entry of parsed) {
-            if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) continue;
+            if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+                onDrop?.(entry);
+                continue;
+            }
             const rec = entry as Record<string, unknown>;
             const url = typeof rec.url === 'string' ? rec.url.trim() : '';
-            if (!isFetchable(url)) continue;
+            if (!isFetchable(url) || seen.has(url)) {
+                onDrop?.(entry);
+                continue;
+            }
+            seen.add(url);
             const name = typeof rec.name === 'string' ? rec.name.trim().slice(0, 300) : '';
             out.push({ name, url });
         }
@@ -82,11 +85,9 @@ export const booksManifest: PluginManifest = {
     capabilities: [PLUGIN_CAPABILITY_NARRATION],
     apiVersion: '^1.0.0',
     permissions: {
-        // Operators supply the addresses, so no hostname exists at authoring
-        // time. The host reads one per row out of the `url` column below.
-        network: [{ fromConfig: BOOKS_KEY }],
-        // Caches the parsed chapter index so a 3 MB EPUB is not re-downloaded
-        // and re-parsed on every console page load.
+        // No hostname exists at authoring time: the host reads one address per row out of `url`, paced gently for public libraries and mirrors.
+        network: [{ fromConfig: BOOKS_KEY, ratePerSecond: 2 }],
+        // A whole book never fits one stored value, hence the slim manifest plus one key per chapter below.
         storage: true,
         oauth: false,
     },
@@ -97,7 +98,7 @@ export const booksManifest: PluginManifest = {
             type: 'list',
             required: true,
             placeholder: 'No books yet.',
-            help: 'One row per book, with the address of its EPUB file: Project Gutenberg, Standard Ebooks, a Calibre-Web instance, or your own file server.',
+            help: 'One row per book, with the address of its EPUB file: Project Gutenberg, Standard Ebooks, a Calibre-Web instance, or your own file server. Each book caches about one stored key per chapter against a 200-key station budget, so keep the shelf to a handful of books.',
             columns: [
                 { key: 'name', label: 'Name', type: 'string', placeholder: 'Frankenstein' },
                 { key: 'url', label: 'EPUB address', type: 'url', required: true, placeholder: 'https://example.com/frankenstein.epub' },
