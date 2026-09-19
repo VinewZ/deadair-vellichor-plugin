@@ -1,0 +1,42 @@
+name: Release tarball
+
+"on":
+    push:
+        tags:
+            - 'v*'
+
+permissions:
+    contents: write
+
+jobs:
+    release:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+
+            - uses: oven-sh/setup-bun@v2
+              with:
+                  bun-version: latest
+
+            - run: bun install --frozen-lockfile
+
+            - name: Check the tag matches package.json
+              run: |
+                  TAG="${GITHUB_REF_NAME#v}"
+                  VERSION="$(node -p "require('./package.json').version")"
+                  if [ "$TAG" != "$VERSION" ]; then
+                      echo "Tag v$TAG does not match package.json version $VERSION."
+                      exit 1
+                  fi
+
+            - run: bun run typecheck
+            - run: bun run test
+            - run: bun run build
+
+            - run: npm pack
+
+            - uses: softprops/action-gh-release@v2
+              with:
+                  files: '*.tgz'
+                  fail_on_unmatched_files: true
+                  generate_release_notes: true
