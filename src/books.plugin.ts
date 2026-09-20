@@ -82,7 +82,9 @@ export class VellichorBooksPlugin extends Plugin implements NarrationPluginInsta
             let id: string | undefined;
             try {
                 id = await seriesIdFor(book.url);
-                const index = await this.indexFor(host, book);
+                // The console's call budget cannot survive a cold download:
+                // list from cache (or skeleton) and let the scheduler refresh.
+                const index = await this.indexFor(host, book, this.timeToRefresh(host));
                 out.push({
                     id,
                     title: seriesDisplayTitle(book, index),
@@ -210,7 +212,7 @@ export class VellichorBooksPlugin extends Plugin implements NarrationPluginInsta
         return undefined;
     }
 
-    private async indexFor(host: PluginHost, book: ConfiguredBook): Promise<EpubIndex> {
+    private async indexFor(host: PluginHost, book: ConfiguredBook, allowRefresh = true): Promise<EpubIndex> {
         const id = await seriesIdFor(book.url);
         const hit = this.cache.get(id);
         if (hit && Date.now() - hit.readAt < MEMORY_TTL_MS) return hit.index;
@@ -218,7 +220,7 @@ export class VellichorBooksPlugin extends Plugin implements NarrationPluginInsta
         const stored = await loadIndex(host.storage, id);
         if (stored) {
             this.cache.set(id, { index: stored.index, readAt: Date.now() });
-            if (Date.now() - stored.fetchedAt < STORE_STALE_MS || !this.timeToRefresh(host)) {
+            if (Date.now() - stored.fetchedAt < STORE_STALE_MS || !this.timeToRefresh(host) || !allowRefresh) {
                 return stored.index;
             }
             // Stale but usable: refresh in place, serve the cache when the network says no.
@@ -233,6 +235,9 @@ export class VellichorBooksPlugin extends Plugin implements NarrationPluginInsta
             }
         }
 
+        // No cache and no refresh budget: fail so the caller lists a
+        // skeleton instead of racing the host's timeout with a download.
+        if (!allowRefresh) throw new PluginError('Book not cached yet.').withCode('timeout');
         return this.fetchAndPersist(host, book, id);
     }
 
@@ -275,7 +280,9 @@ export class VellichorBooksPlugin extends Plugin implements NarrationPluginInsta
         }
         const buffer = new Uint8Array(await response.arrayBuffer());
         if (buffer.length === 0) throw new PluginError('Book answered with an empty file.').withCode('upstream');
-        const index = await parseEpubBuffer(buffer, fileNameFor(book.url), signal);
+        const index = await parseEpubBuffer(buffer, fileNameFor(book.url), signal, skipped => {
+            host.logger.info('book furniture skipped (never airs)', { url: book.url, skipped });
+        });
         this.cache.set(id, { index, readAt: Date.now() });
         const { failed } = await persistIndex(host.storage, id, index, Date.now());
         if (failed.length > 0) {

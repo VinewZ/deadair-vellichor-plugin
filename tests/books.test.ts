@@ -18,6 +18,11 @@ describe('htmlToParagraphs', () => {
         const parts = htmlToParagraphs('<html><body><p>First.</p><p>Second <b>bold</b>.</p></body></html>');
         expect(parts).toEqual(['First.', 'Second bold .']);
     });
+
+    it('keeps <pre> as its own block and still splits <br/>', () => {
+        const parts = htmlToParagraphs('<html><body><p>Before.</p><pre>Line one\nLine two</pre><p>After<br/>more.</p></body></html>');
+        expect(parts).toEqual(['Before.', 'Line one Line two', 'After', 'more.']);
+    });
 });
 
 describe('stripEditorial', () => {
@@ -147,6 +152,66 @@ describe('parseEpubBuffer', () => {
         const index = await parseEpubBuffer(bytes, 'mixed.epub');
         expect(index.chapters).toHaveLength(1);
         expect(index.chapters[0]?.paragraphs).toEqual(['Real.']);
+    });
+
+    it('drops furniture: linear=no, guide cover/toc, nav properties, front/back matter', async () => {
+        const bytes = await buildEpub({
+            title: 'Furniture',
+            includeNcx: false,
+            chapters: [
+                { file: 'text/notice.xhtml', id: 'notice', linearNo: true, body: '<p>Use of anyone anywhere.</p>' },
+                { file: 'text/toc.xhtml', id: 'toc', guideType: 'toc', body: '<p>Contents.</p>' },
+                { file: 'text/nav.xhtml', id: 'nav', properties: 'nav', body: '<p>Nav.</p>' },
+                { file: 'text/licence.xhtml', id: 'licence', epubType: 'backmatter copyright-page', body: '<p>Licence.</p>' },
+                { file: 'text/tocpage.xhtml', id: 'tocpage', bodyAttrs: 'epub:type="frontmatter"', body: '<p>Contents page.</p>' },
+                {
+                    file: 'text/letter1.xhtml',
+                    id: 'letter1',
+                    body: '<section epub:type="chapter"><h1>Letter 1</h1><p>Real.</p></section>',
+                },
+            ],
+        });
+        const skipped: string[][] = [];
+        const index = await parseEpubBuffer(bytes, 'furniture.epub', undefined, hrefs => {
+            skipped.push(hrefs);
+        });
+        expect(index.chapters).toHaveLength(1);
+        expect(index.chapters[0]?.paragraphs).toEqual(['Letter 1', 'Real.']);
+        expect(skipped).toHaveLength(1);
+        expect(skipped[0]).toHaveLength(5);
+    });
+
+    it('names a multi-section file after its first navPoint', async () => {
+        const bytes = await buildEpub({
+            title: 'Sections',
+            chapters: [{ file: 'text/ch.xhtml', id: 'ch', body: '<p>Real.</p>' }],
+            ncxExtra: [
+                { label: 'Primary', src: 'text/ch.xhtml#s1' },
+                { label: 'Trailing', src: 'text/ch.xhtml#s2' },
+            ],
+        });
+        const index = await parseEpubBuffer(bytes, 'sections.epub');
+        expect(index.chapters).toHaveLength(1);
+        expect(index.chapters[0]?.title).toBe('Primary');
+    });
+
+    it('drops a page of links but keeps prose with a few inline links', async () => {
+        const links = Array.from({ length: 10 }, (_, i) => `<a href="ch${i}.xhtml">Chapter ${i}</a>`).join(' ');
+        const bytes = await buildEpub({
+            title: 'Links',
+            includeNcx: false,
+            chapters: [
+                { file: 'text/toc.xhtml', id: 'toc', body: `<p>${links}</p>` },
+                { file: 'text/ch.xhtml', id: 'ch', body: '<p>Read <a href="note.xhtml">more here</a> and on.</p>' },
+            ],
+        });
+        const skipped: string[][] = [];
+        const index = await parseEpubBuffer(bytes, 'links.epub', undefined, hrefs => {
+            skipped.push(hrefs);
+        });
+        expect(index.chapters).toHaveLength(1);
+        expect(index.chapters[0]?.paragraphs).toEqual(['Read more here and on.']);
+        expect(skipped[0]).toEqual(['OEBPS/text/toc.xhtml']);
     });
 });
 

@@ -122,10 +122,10 @@ export function cleanTitle(title: string, fallback = 'Untitled'): string {
 export function htmlToParagraphs(html: string): string[] {
     const withoutHead = html.replace(/<head[\s\S]*?<\/head>/gi, ' ');
     const noScript = withoutHead.replace(/<(script|style|nav)[\s\S]*?<\/\1>/gi, ' ');
-    const blocks = noScript.split(/<(?:p|h[1-6]|li|blockquote|div|section|article|br)[^>]*>/gi);
+    const blocks = noScript.split(/<(?:p|h[1-6]|li|blockquote|pre|div|section|article|br)(?:\s[^>]*)?\/?>/gi);
     const out: string[] = [];
     for (const block of blocks) {
-        const ends = block.split(/<\/(?:p|h[1-6]|li|blockquote|div|section|article)>/gi);
+        const ends = block.split(/<\/(?:p|h[1-6]|li|blockquote|pre|div|section|article)>/gi);
         for (const chunk of ends) {
             const t = plainText(chunk);
             if (!t) continue;
@@ -142,7 +142,43 @@ interface ManifestItem {
     properties?: string;
 }
 
-export async function parseEpubBuffer(data: Uint8Array, fileName: string, signal?: AbortSignal): Promise<EpubIndex> {
+/** epub:type tokens anywhere in the document: the root declares it in EPUB 3, inner body/nav elements in EPUB 2-era files. */
+function docEpubTypes(html: string): string[] {
+    const out: string[] = [];
+    for (const m of html.matchAll(/\sepub:type\s*=\s*["']([^"']*)["']/gi)) {
+        const token = m[1];
+        if (token) out.push(...token.toLowerCase().split(/\s+/).filter(Boolean));
+    }
+    return out;
+}
+
+/** True for matter no listener should ever hear: notices, licences, covers. */
+export function isFurnitureType(types: string[]): boolean {
+    return types.some(t => t === 'frontmatter' || t === 'backmatter' || t === 'colophon' || t === 'copyright-page');
+}
+
+/**
+ * Words inside links: a contents page is nearly all link labels, a chapter
+ * nearly none. The ratio tells them apart for any publisher.
+ */
+export function linkWordCount(html: string): number {
+    let total = 0;
+    for (const m of html.matchAll(/<a(?:\s[^>]*)?>((?:(?!<a[\s>])[\s\S])*?)<\/a\s*>/gi)) {
+        const text = plainText(m[1] ?? '');
+        if (text) total += countWords(text);
+    }
+    return total;
+}
+
+/** Above this share of link text a file is an index of links, not a chapter. */
+export const LINK_DENSITY_GUARD = 0.5;
+
+export async function parseEpubBuffer(
+    data: Uint8Array,
+    fileName: string,
+    signal?: AbortSignal,
+    reportSkipped?: (hrefs: string[]) => void,
+): Promise<EpubIndex> {
     const zip = await JSZip.loadAsync(data);
     throwIfAborted(signal);
     const containerFile = zip.file('META-INF/container.xml');
@@ -191,8 +227,46 @@ export async function parseEpubBuffer(data: Uint8Array, fileName: string, signal
     }
 
     const spineRaw = asArray((opf['spine'] as Record<string, unknown> | undefined)?.['itemref'] as unknown) as Record<string, unknown>[];
-    const spineIds = spineRaw.map(r => r['@_idref']).filter((v): v is string => typeof v === 'string');
+    const skipped: string[] = [];
+    // Spine entries are chapters unless the publisher says otherwise:
+    // linear="no" marks furniture (notices, tables of contents) the
+    // serial must not open with or ever air.
+    const spineIds = spineRaw
+        .filter(r => {
+            const linear = r['@_linear'];
+            if (typeof linear === 'string' && linear.toLowerCase() === 'no') {
+                const dropped = r['@_idref'];
+                if (typeof dropped === 'string') {
+                    const href = manifest.get(dropped)?.href;
+                    if (href) skipped.push(href);
+                }
+                return false;
+            }
+            return true;
+        })
+        .map(r => r['@_idref'])
+        .filter((v): v is string => typeof v === 'string');
     if (spineIds.length === 0) throw new Error('Invalid EPUB: empty spine');
+
+    // EPUB 2 furniture pointers: the guide names cover and TOC files outright.
+    const guideTypes = new Set(['cover', 'title-page', 'toc']);
+    const guideHrefs = new Set<string>();
+    const guideRaw = asArray((opf['guide'] as Record<string, unknown> | undefined)?.['reference'] as unknown) as Record<string, unknown>[];
+    for (const ref of guideRaw) {
+        const type = ref['@_type'];
+        const href = ref['@_href'];
+        if (typeof type !== 'string' || typeof href !== 'string') continue;
+        if (guideTypes.has(type.toLowerCase())) {
+            const key = normalizeHref(base, decodePath(href)).split('#')[0] ?? '';
+            if (key) guideHrefs.add(key);
+        }
+    }
+    // EPUB 3 navigation and cover-image documents are furniture by definition.
+    const furnitureIds = new Set<string>();
+    for (const [id, item] of manifest) {
+        const tokens = (item.properties ?? '').toLowerCase().split(/\s+/);
+        if (tokens.includes('nav') || tokens.includes('cover-image')) furnitureIds.add(id);
+    }
 
     // TOC: prefer NCX, else spine order with HTML titles.
     const labelByHref = new Map<string, string>();
@@ -213,7 +287,9 @@ export async function parseEpubBuffer(data: Uint8Array, fileName: string, signal
                         const src = (r['content'] as Record<string, unknown>)?.['@_src'];
                         if (label && typeof src === 'string') {
                             const key = normalizeHref(ncxBase, decodePath(String(src))).split('#')[0] ?? '';
-                            labelByHref.set(key, cleanTitle(label, label));
+                            // First navPoint names the file: later fragments
+                            // are trailing sections, never the chapter title.
+                            if (key && !labelByHref.has(key)) labelByHref.set(key, cleanTitle(label, label));
                         }
                         if (r['navPoint']) walk(r['navPoint']);
                     }
@@ -233,22 +309,40 @@ export async function parseEpubBuffer(data: Uint8Array, fileName: string, signal
         if (!item) continue;
         // Only XHTML spine entries are chapters; anything else would parse as garbage text.
         if (item.mediaType && item.mediaType !== 'application/xhtml+xml' && item.mediaType !== 'text/html') continue;
+        const key = item.href.split('#')[0] ?? item.href;
+        if (furnitureIds.has(id) || guideHrefs.has(key)) {
+            skipped.push(item.href);
+            continue;
+        }
         const entry = zip.file(item.href);
         if (!entry) continue;
         const html = await entry.async('string');
+        // Furniture declares itself anywhere in the document: EPUB 3 on the
+        // root, older files on inner body/nav elements.
+        if (isFurnitureType(docEpubTypes(html))) {
+            skipped.push(item.href);
+            continue;
+        }
         const paragraphs = htmlToParagraphs(html);
         if (paragraphs.length === 0) continue;
-        const key = item.href.split('#')[0] ?? item.href;
+        // An index of links is furniture in any publisher's book: its words
+        // are link labels, not text to speak.
+        const words = countWords(paragraphs.join('\n\n'));
+        if (words > 0 && linkWordCount(html) / words > LINK_DENSITY_GUARD) {
+            skipped.push(item.href);
+            continue;
+        }
         // Fallbacks count finished chapters so skips leave no gaps and ordinals agree.
         const fallback = `Chapter ${chapters.length + 1}`;
         chapters.push({
             title: cleanTitle(labelByHref.get(key) ?? htmlTitle(html, fallback), fallback),
             href: item.href,
             paragraphs,
-            wordCount: countWords(paragraphs.join('\n\n')),
+            wordCount: words,
         });
     }
     if (chapters.length === 0) throw new Error('Could not extract text from EPUB');
+    if (skipped.length > 0) reportSkipped?.(skipped);
 
     return {
         title,

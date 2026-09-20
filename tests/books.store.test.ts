@@ -207,12 +207,18 @@ describe('persistIndex / loadIndex', () => {
         await expect(loadIndex(store, id)).resolves.toBeUndefined();
     });
 
-    it('resolves undefined when any chapter text is missing', async () => {
+    it('degrades a chapter with missing text instead of failing the book', async () => {
         const store = memoryStore();
         const id = await seriesIdFor(BOOK_URL);
-        await persistIndex(store, id, await standardIndex(), Date.now());
+        const before = await standardIndex();
+        await persistIndex(store, id, before, Date.now());
         store.data.delete(chapterKey(id, 1, 0, false));
-        await expect(loadIndex(store, id)).resolves.toBeUndefined();
+        const loaded = await loadIndex(store, id);
+        expect(loaded).toBeDefined();
+        expect(loaded?.index.chapters).toHaveLength(before.chapters.length);
+        expect(loaded?.index.chapters[1]?.paragraphs).toEqual([]);
+        expect(loaded?.index.chapters[1]?.wordCount).toBe(before.chapters[1]?.wordCount);
+        expect(loaded?.index.chapters[0]?.paragraphs).toEqual(before.chapters[0]?.paragraphs);
     });
 
     it('keeps the legacy fallback when the slim manifest refuses to store', async () => {
@@ -424,6 +430,20 @@ describe('VellichorBooksPlugin', () => {
         expect(warm.fetchCalls).toHaveLength(0);
     });
 
+    it('lists a skeleton without fetching when a cold book is over budget', async () => {
+        const spy = vi.fn(async () => {
+            throw new Error('must not be called');
+        });
+        const { plugin } = await started({
+            books: [{ url: 'https://example.com/my_book.epub' }],
+            fetchImpl: spy,
+            remainingMs: 0,
+        });
+        const series = await plugin.listSeries();
+        expect(series).toHaveLength(1);
+        expect(series[0]?.title).toBe('my book');
+        expect(spy).not.toHaveBeenCalled();
+    });
     it('stops starting books once the host gives up on the call', async () => {
         const spy = vi.fn(async () => new Response(await buildStandardEpub(), { status: 200 }));
         const { plugin } = await started({

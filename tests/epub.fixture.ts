@@ -7,6 +7,16 @@ export interface FixtureChapter {
     body: string;
     ncxLabel?: string;
     mediaType?: string;
+    /** Spine linear="no": furniture the serial must skip. */
+    linearNo?: boolean;
+    /** Guide reference type pointing at this file: 'cover', 'toc', ... */
+    guideType?: string;
+    /** OPF manifest properties, e.g. 'nav'. */
+    properties?: string;
+    /** epub:type on the document root, e.g. 'copyright-page'. */
+    epubType?: string;
+    /** Raw attributes on the <body> element, e.g. 'epub:type="frontmatter"'. */
+    bodyAttrs?: string;
 }
 
 export interface FixtureOptions {
@@ -16,16 +26,28 @@ export interface FixtureOptions {
     chapters: FixtureChapter[];
     includeNcx?: boolean;
     opfDir?: string;
+    /** Extra NCX points (e.g. a second fragment in an existing file). */
+    ncxExtra?: Array<{ label: string; src: string }>;
 }
 
 const containerXml = (opfPath: string): string =>
     `<?xml version="1.0" encoding="UTF-8"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="${opfPath}" media-type="application/oebps-package+xml"/></rootfiles></container>`;
 
 function opfXml(opt: FixtureOptions): string {
-    const items = opt.chapters.map(c => `<item id="${c.id}" href="${c.file}" media-type="${c.mediaType ?? 'application/xhtml+xml'}"/>`).join('');
+    const items = opt.chapters
+        .map(
+            c =>
+                `<item id="${c.id}" href="${c.file}" media-type="${c.mediaType ?? 'application/xhtml+xml'}"${c.properties ? ` properties="${c.properties}"` : ''}/>`,
+        )
+        .join('');
     const ncx = opt.includeNcx === false ? '' : `<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>`;
-    const spine = opt.chapters.map(c => `<itemref idref="${c.id}"/>`).join('');
-    return `<?xml version="1.0" encoding="UTF-8"?><package version="2.0" xmlns="http://www.idpf.org/2007/opf" unique-identifier="uid"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>${opt.title ?? 'Fixture Book'}</dc:title><dc:creator>${opt.author ?? 'Fixture Author'}</dc:creator><dc:language>en</dc:language>${opt.description ? `<dc:description>${opt.description}</dc:description>` : ''}</metadata><manifest>${items}${ncx}</manifest><spine>${spine}</spine></package>`;
+    const spine = opt.chapters.map(c => `<itemref idref="${c.id}"${c.linearNo ? ' linear="no"' : ''}/>`).join('');
+    const guideRefs = opt.chapters
+        .filter(c => c.guideType !== undefined)
+        .map(c => `<reference type="${c.guideType}" title="Furniture" href="${c.file}"/>`)
+        .join('');
+    const guide = guideRefs ? `<guide>${guideRefs}</guide>` : '';
+    return `<?xml version="1.0" encoding="UTF-8"?><package version="2.0" xmlns="http://www.idpf.org/2007/opf" unique-identifier="uid"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>${opt.title ?? 'Fixture Book'}</dc:title><dc:creator>${opt.author ?? 'Fixture Author'}</dc:creator><dc:language>en</dc:language>${opt.description ? `<dc:description>${opt.description}</dc:description>` : ''}</metadata><manifest>${items}${ncx}</manifest><spine>${spine}</spine>${guide}</package>`;
 }
 
 function ncxXml(opt: FixtureOptions): string {
@@ -33,11 +55,16 @@ function ncxXml(opt: FixtureOptions): string {
         .filter(c => c.ncxLabel !== undefined)
         .map((c, i) => `<navPoint id="np${i}"><navLabel><text>${c.ncxLabel}</text></navLabel><content src="${c.file}"/></navPoint>`)
         .join('');
-    return `<?xml version="1.0" encoding="UTF-8"?><ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1"><head><meta name="dtb:uid" content="uid"/></head><docTitle><text>Fixture</text></docTitle><navMap>${points}</navMap></ncx>`;
+    const extra = (opt.ncxExtra ?? [])
+        .map((e, i) => `<navPoint id="npx${i}"><navLabel><text>${e.label}</text></navLabel><content src="${e.src}"/></navPoint>`)
+        .join('');
+    return `<?xml version="1.0" encoding="UTF-8"?><ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1"><head><meta name="dtb:uid" content="uid"/></head><docTitle><text>Fixture</text></docTitle><navMap>${points}${extra}</navMap></ncx>`;
 }
 
 function chapterXml(c: FixtureChapter): string {
-    return `<?xml version="1.0" encoding="UTF-8"?><html xmlns="http://www.w3.org/1999/xhtml"><head>${c.head ?? ''}</head><body>${c.body}</body></html>`;
+    const epubType = c.epubType ? ` epub:type="${c.epubType}"` : '';
+    const bodyAttrs = c.bodyAttrs ? ` ${c.bodyAttrs}` : '';
+    return `<?xml version="1.0" encoding="UTF-8"?><html xmlns="http://www.w3.org/1999/xhtml"${epubType} xmlns:epub="http://www.idpf.org/2007/ops"><head>${c.head ?? ''}</head><body${bodyAttrs}>${c.body}</body></html>`;
 }
 
 /** A minimal multi-chapter EPUB held entirely in memory. OPF+NCX live in OEBPS/, chapters beneath it. */

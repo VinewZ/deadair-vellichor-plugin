@@ -15,7 +15,7 @@ To build it yourself instead:
    bun install
    bun run build
    ```
-2. Pack it into a tarball (produces `deadair-plugin-vellichor-books-0.1.0.tgz`):
+2. Pack it into a tarball (produces `deadair-plugin-vellichor-books-0.1.1.tgz`):
    ```sh
    npm pack
    ```

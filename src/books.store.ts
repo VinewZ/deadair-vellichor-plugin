@@ -8,7 +8,7 @@ import { isNamedAuthor, stripEditorial } from './books.epub.js';
  * failing only costs a re-fetch, never a listing.
  */
 
-export const STORE_VERSION = 1;
+export const STORE_VERSION = 2;
 
 /** Keep each stored value comfortably under the host's per-value cap. */
 export const CHAPTER_VALUE_GUARD_BYTES = 48 * 1024;
@@ -163,7 +163,7 @@ export async function persistIndex(store: KeyValueStore, id: string, index: Epub
     return { failed };
 }
 
-async function readChapter(store: KeyValueStore, id: string, ordinal: number, entry: StoredChapter): Promise<string[] | undefined> {
+async function readChapter(store: KeyValueStore, id: string, ordinal: number, entry: StoredChapter): Promise<string[]> {
     const chunked = entry.chunks > 1;
     const paragraphs: string[] = [];
     for (let chunk = 0; chunk < entry.chunks; chunk++) {
@@ -171,15 +171,17 @@ async function readChapter(store: KeyValueStore, id: string, ordinal: number, en
         try {
             raw = await store.get(chapterKey(id, ordinal, chunk, chunked));
         } catch {
-            return undefined;
+            // One unreadable chunk degrades its chapter, never the book:
+            // failing the whole load here re-downloads forever.
+            return [];
         }
-        if (!Array.isArray(raw) || !(raw as unknown[]).every(p => typeof p === 'string')) return undefined;
+        if (!Array.isArray(raw) || !(raw as unknown[]).every(p => typeof p === 'string')) return [];
         paragraphs.push(...(raw as string[]));
     }
     return paragraphs;
 }
 
-/** Reassemble an index from the slim scheme, migrating a legacy full-index value forward when found. Resolves `undefined` when anything is missing or misshapen. */
+/** Reassemble an index from the slim scheme, migrating a legacy full-index value forward when found. Resolves `undefined` only when the manifest itself is missing or misshapen; a chapter with lost text loads empty. */
 export interface LoadedIndex {
     index: EpubIndex;
     fetchedAt: number;
@@ -196,8 +198,9 @@ export async function loadIndex(store: KeyValueStore, id: string): Promise<Loade
         const chapters: EpubChapter[] = [];
         for (let ordinal = 0; ordinal < manifest.chapters.length; ordinal++) {
             const entry = manifest.chapters[ordinal] as StoredChapter;
+            // A chapter whose text is gone still lists (title + word count
+            // from the manifest); only its audio is missing.
             const paragraphs = await readChapter(store, id, ordinal, entry);
-            if (!paragraphs) return undefined;
             chapters.push({ title: entry.title, href: entry.href, paragraphs, wordCount: entry.wordCount });
         }
         return {
