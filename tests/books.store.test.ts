@@ -48,11 +48,14 @@ function fakeHost(opts: {
     fetchImpl: (url: string) => Promise<Response>;
     remainingMs?: number;
     aborted?: boolean;
+    skipped?: string[];
 }): FakeHost {
     const warnings: FakeHost['warnings'] = [];
     const fetchCalls: string[] = [];
     const host = {
-        config: { get: async () => ({ books: JSON.stringify(opts.books) }) },
+        config: {
+            get: async () => ({ books: JSON.stringify(opts.books), skipped: JSON.stringify(opts.skipped ?? []) }),
+        },
         logger: {
             debug() {},
             info() {},
@@ -88,7 +91,7 @@ describe('chunkParagraphs', () => {
     });
 
     it('splits a long chapter into groups under the guard', () => {
-        const paragraphs = Array.from({ length: 300 }, (_, i) => `Paragraph ${i} ` + 'x'.repeat(300));
+        const paragraphs = Array.from({ length: 300 }, (_, i) => `Paragraph ${i} ${'x'.repeat(300)}`);
         const groups = chunkParagraphs(paragraphs);
         expect(groups.length).toBeGreaterThan(1);
         expect(groups.flat()).toEqual(paragraphs);
@@ -121,7 +124,7 @@ describe('persistIndex / loadIndex', () => {
         const long: EpubIndex = {
             ...index,
             chapters: [
-                { title: 'Long', href: 'long.xhtml', paragraphs: Array.from({ length: 300 }, (_, i) => `P${i} ` + 'y'.repeat(300)), wordCount: 1200 },
+                { title: 'Long', href: 'long.xhtml', paragraphs: Array.from({ length: 300 }, (_, i) => `P${i} ${'y'.repeat(300)}`), wordCount: 1200 },
             ],
         };
         const { failed } = await persistIndex(store, id, long, Date.now());
@@ -266,6 +269,7 @@ describe('VellichorBooksPlugin', () => {
         fetchImpl?: (url: string) => Promise<Response>;
         remainingMs?: number;
         aborted?: boolean;
+        skipped?: string[];
         store?: KeyValueStore & { data: Map<string, unknown> };
     }) {
         const bytes = await buildStandardEpub();
@@ -276,6 +280,7 @@ describe('VellichorBooksPlugin', () => {
             fetchImpl: opts.fetchImpl ?? okFetch(bytes),
             remainingMs: opts.remainingMs,
             aborted: opts.aborted,
+            skipped: opts.skipped,
         });
         const plugin = new VellichorBooksPlugin();
         await plugin.init(host);
@@ -302,6 +307,91 @@ describe('VellichorBooksPlugin', () => {
         }
     });
 
+    it('suggests every chapter for the skipped-sections boxes', async () => {
+        const { plugin } = await started({});
+        const seriesId = await seriesIdOf(plugin);
+        const suggestions = await plugin.suggestConfigOptions();
+        expect(suggestions.skipped).toHaveLength(3);
+        expect(suggestions.skipped?.map(o => o.value)).toEqual([`${seriesId}:0`, `${seriesId}:1`, `${seriesId}:2`]);
+        expect(suggestions.skipped?.[0]?.label).toContain('Fixture');
+    });
+
+    it('suggests from cache only: a cold book fetches nothing and lists nothing', async () => {
+        const spy = vi.fn(async () => new Response(await buildStandardEpub(), { status: 200 }));
+        // Fresh instance, empty storage: suggestions may not download.
+        const { plugin } = await started({ fetchImpl: spy, remainingMs: 0, store: memoryStore() });
+        expect(await plugin.suggestConfigOptions()).toEqual({ skipped: [] });
+        expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('suggests cached chapters with no budget and no fetch', async () => {
+        const store = memoryStore();
+        const primed = await started({ store });
+        await primed.plugin.listSeries();
+        const spy = vi.fn(async () => {
+            throw new Error('must not be called');
+        });
+        const warm = await started({ store, fetchImpl: spy, remainingMs: 0 });
+        expect((await warm.plugin.suggestConfigOptions()).skipped).toHaveLength(3);
+        expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('warms a cold book outside any call budget', async () => {
+        const { plugin, fetchCalls } = await started({});
+        expect(fetchCalls).toHaveLength(0);
+        await plugin.warmUncachedBooks();
+        expect(fetchCalls).toHaveLength(1);
+        const series = await plugin.listSeries();
+        expect(series[0]).toMatchObject({ title: 'Fixture', order: 'serial' });
+    });
+
+    it('leaves a fresh book alone when warming', async () => {
+        const store = memoryStore();
+        const primed = await started({ store });
+        await primed.plugin.listSeries();
+        expect(primed.fetchCalls).toHaveLength(1);
+        const spy = vi.fn(async () => {
+            throw new Error('must not be called');
+        });
+        const warm = await started({ store, fetchImpl: spy });
+        await warm.plugin.warmUncachedBooks();
+        expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('warms past a failing book without blocking the others', async () => {
+        const bytes = await buildStandardEpub();
+        const deadUrl = 'https://example.com/dead.epub';
+        const { plugin, warnings } = await started({
+            books: [
+                { name: 'Dead', url: deadUrl },
+                { name: 'Fixture', url: BOOK_URL },
+            ],
+            fetchImpl: async (url: string) => {
+                if (url === deadUrl) throw new Error('offline');
+                return new Response(bytes, { status: 200 });
+            },
+        });
+        await plugin.warmUncachedBooks();
+        expect(warnings.some(w => w.message === 'book background warm failed, will retry on next load')).toBe(true);
+        const series = await plugin.listSeries();
+        expect(series.map(s => s.title)).toEqual(['Dead', 'Fixture']);
+    });
+
+    it('never lists or reads an unchecked section, keeping ordinals stable', async () => {
+        const { plugin } = await started({});
+        const seriesId = await seriesIdOf(plugin);
+        const skipped = await started({ skipped: [`${seriesId}:1`, '  ', `${seriesId}:99`] });
+        const pieces = await skipped.plugin.listPieces({ seriesId, limit: 10 });
+        expect(pieces.map(p => p.ordinal)).toEqual([0, 2]);
+        expect(pieces.map(p => p.id)).toEqual([`${seriesId}:0`, `${seriesId}:2`]);
+        await expect(skipped.plugin.getText({ seriesId, pieceId: `${seriesId}:1` })).resolves.toBeUndefined();
+        const kept = await skipped.plugin.getText({ seriesId, pieceId: `${seriesId}:0` });
+        expect(kept?.parts.length).toBeGreaterThan(0);
+        await expect(skipped.plugin.testConnection()).resolves.toEqual({
+            ok: true,
+            message: expect.stringContaining('Skipping 2 unchecked sections.'),
+        });
+    });
     it('serves chapter text as text-only parts and rejects foreign ids', async () => {
         const { plugin } = await started({});
         const seriesId = await seriesIdOf(plugin);

@@ -1,6 +1,6 @@
 # Vellichor Books
 
-A narration plugin for the deadair station that reads EPUB books aloud, one chapter at a time. Each configured book appears to the station as a series, and each chapter as a piece of that series, so a narrator voice (for example Kokoro TTS) can speak a chapter at every narration band. EPUB-only, version 0.1.0.
+A narration plugin for the deadair station that reads EPUB books aloud, one chapter at a time. Each configured book appears to the station as a series, and each chapter as a piece of that series, so a narrator voice (for example Kokoro TTS) can speak a chapter at every narration band. EPUB-only.
 
 The plugin downloads each book's EPUB file, extracts clean text per chapter (no markup, no bracketed furniture like footnotes or illustration notes, which would otherwise be spoken as performance cues), and caches it so books are not re-downloaded on every page load. Book titles, chapter titles, and author names are cleaned the same way before they can ever reach a presenter or a voice. Anonymous books simply list without an author instead of saying "Unknown" aloud.
 
@@ -15,10 +15,11 @@ To build it yourself instead:
    bun install
    bun run build
    ```
-2. Pack it into a tarball (produces `deadair-plugin-vellichor-books-0.1.1.tgz`):
+2. Pack it into a tarball:
    ```sh
    npm pack
    ```
+   (produces `deadair-plugin-vellichor-books-<version>.tgz` matching the version in `package.json`).
 3. In the station console, go to Plugins → Import and upload the tarball, then Enable the plugin. It appears as `radio.vellichor.books` ("Vellichor books").
 4. Optionally verify the setup first with `bun run typecheck` and `bun run test`.
 
@@ -26,7 +27,8 @@ To build it yourself instead:
 
 1. Open the plugin's configuration and add one row per book to the **Books** list: a **Name** (optional label, e.g. `Frankenstein`) and the **EPUB address** (required, `http://` or `https://`). Good sources are Project Gutenberg, Standard Ebooks, a Calibre-Web instance, or your own file server.
 2. Press **Test Connection**: the plugin reads every configured book and reports something like `Read Frankenstein: 30 chapters.` If a book cannot be downloaded in the few seconds the probe allows, it tells you it is not cached yet — try again in a minute.
-3. Set a narrator voice for the series (e.g. "Speak with" your Kokoro TTS plugin) and make sure a format clock has a narration band that includes books. At each band the station picks the next unread chapter and the voice reads it on air.
-4. Keep the shelf to a handful of books: each book caches about one stored key per chapter against a 200-key station budget.
+3. The parser skips what the book's own markup marks as furniture (covers, tables of contents, non-linear sections), but some files carry none — a licence page with no markings still lists as a chapter. To silence sections: save the form once so the books load, reopen it, and check them in **Skipped sections**. Checked sections never list and never air; chapters keep their numbers so the serial order is unaffected. Empty means narrate everything.
+4. Set a narrator voice for the series (e.g. "Speak with" your Kokoro TTS plugin) and make sure a format clock has a narration band that includes books. At each band the station picks the next unread chapter and the voice reads it on air.
+5. Keep the shelf to a handful of books: each book caches about one stored key per chapter against a 200-key station budget.
 
 If a book's file is temporarily unreachable, the plugin keeps serving its cached text and lists the series without metadata rather than dropping your other books.

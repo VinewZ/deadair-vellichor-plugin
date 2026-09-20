@@ -3,6 +3,7 @@ import { z } from 'zod';
 
 export const REQUEST_TIMEOUT_MS = 15_000;
 export const BOOKS_KEY = 'books';
+export const SKIPPED_KEY = 'skipped';
 
 export const booksConfig = z.object({
     books: z.string().default('[]'),
@@ -75,12 +76,13 @@ const booksRefine = z
 
 export const booksConfigSchema = z.object({
     books: booksRefine,
+    skipped: z.string().default('[]'),
 });
 
 export const booksManifest: PluginManifest = {
     id: 'radio.vellichor.books',
     name: 'Vellichor books',
-    version: '0.1.0',
+    version: '0.1.2',
     description: 'Reads EPUB books from your own addresses so the station can read a chapter aloud at a narration band.',
     capabilities: [PLUGIN_CAPABILITY_NARRATION],
     apiVersion: '^1.0.0',
@@ -103,6 +105,12 @@ export const booksManifest: PluginManifest = {
                 { key: 'name', label: 'Name', type: 'string', placeholder: 'Frankenstein' },
                 { key: 'url', label: 'EPUB address', type: 'url', required: true, placeholder: 'https://example.com/frankenstein.epub' },
             ],
+        },
+        {
+            key: SKIPPED_KEY,
+            label: 'Skipped sections',
+            type: 'multiselect',
+            help: 'Checked sections never air. Chapters appear here only after the book has loaded once: save the form, press Test Connection, then reopen it. Empty means narrate everything.',
         },
     ],
     configSchema: booksConfigSchema,

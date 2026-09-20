@@ -1,6 +1,6 @@
 {
     "name": "deadair-plugin-vellichor-books",
-    "version": "0.1.1",
+    "version": "0.1.2",
     "private": true,
     "description": "Read EPUB books aloud as narration: series and chapters as text for the station to speak.",
     "license": "MIT",

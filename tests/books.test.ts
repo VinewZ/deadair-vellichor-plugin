@@ -74,6 +74,7 @@ describe('parseBookRows', () => {
         expect(() => booksConfigSchema.parse({ books: JSON.stringify([{ url: 'notaurl' }]) })).toThrow();
         expect(booksConfigSchema.parse({ books: JSON.stringify([{ url: 'https://example.com/a.epub' }]) })).toEqual({
             books: JSON.stringify([{ url: 'https://example.com/a.epub' }]),
+            skipped: '[]',
         });
     });
 });
